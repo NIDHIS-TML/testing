@@ -1,0 +1,261 @@
+[hadoop@ip-172-31-202-13 nidhi]$ cat common.py
+from pyspark.sql import SparkSession
+from pyspark.sql.window import Window
+from pyspark.sql.functions import row_number
+import json
+import re
+import mysql.connector
+from mysql.connector import errorcode
+
+class Common(object):
+    def CreateSparkSession(self,mappingName):
+                        # from pyspark.sql import SparkSession
+                        # Build spark Session instance to interact with Spark Core
+                        spark = SparkSession.builder.appName(mappingName).getOrCreate();
+                        return spark;
+
+    def get_input_path(self):
+                        input_path="../SQLQueries/generateGDMTable_"
+                        return input_path
+
+    def sql_parser(self, query):
+                        parsed = re.findall(r'\w+\.\w+', query)
+                        return sorted(set([tuple(i.split('.')) for i in parsed]))
+
+    def get_paths(self):
+        with open("/home/hadoop/phase-2/final_code/ac_path_file.json", 'r') as path_file:
+            path_json = json.load(path_file)
+        sys_path = path_json["SYSTEM_PATH"]
+        src_path = path_json["SOURCE_QUERY_PATH"]
+        return sys_path, src_path
+
+    def get_csv(self, spark, path):
+        """Get the path for the csv file and return it as a spark dataframe.
+        Parameters
+        ----------
+        path : string
+            Path to the query file.
+        Returns
+        -------
+        df : pyspark dataframe
+            CSV file read and returned as a pyspark dataframe.
+        """
+        df = spark.read.csv(path, header='True')
+        return df
+
+    def get_query(self, path):
+        """Get the query from the file mentioned in the 'path' parameter.
+        Parameters
+        ----------
+        path : string
+            Path to the query file.
+        Returns
+        -------
+        query : string
+            SQL query as a string.
+        """
+        f = open(path)
+        query = f.read()
+        f.close()
+        return query
+
+    def get_mysql(self, spark, query):
+        """Get the OLTP table based on the query passed
+        Parameters
+        ----------
+        query : string
+            SQL query as a string.
+        spark : object
+            Spark session object
+        Returns
+        -------
+        df : pyspark dataframe
+            OLTP table is returned as a pyspark dataframe
+        """
+        # get oltp table
+        df = spark.read.format("jdbc").option("url", "jdbc:mysql://172.31.202.41/tml_etl_sap_metadata").option("driver", "com.mysql.jdbc.Driver").option("dbtable", query).option("user", "sap_metauser").option("password", "Sap@1234").load()
+        return df
+
+    def mysql_connector(self,query,strategy):
+        config = {
+            'user' : 'sap_metauser',
+            'password' : 'Sap@1234',
+            'host' : '172.31.202.41',
+            'port' : '3306',
+            'database' : 'tml_etl_sap_metadata',
+            'charset' : 'utf8mb4',
+            'raise_on_warnings' : True
+        }
+        db = mysql.connector.connect(**config)
+        cursor = db.cursor()
+        try:
+            cursor.execute(query)
+        except mysql.connector.Error as err:
+            print("Failed updating data: {}".format(err))
+
+        if (strategy.upper() == "SELECT"):
+            result=cursor.fetchall()
+            cursor.close()
+            db.close()
+            return result
+        else:
+            db.commit()
+            cursor.close()
+            db.close()
+            return
+
+    def get_oltp(self, spark, query):
+        """Get the OLTP table based on the query passed
+        Parameters
+        ----------
+        query : string
+            SQL query as a string.
+        spark : object
+            Spark session object
+        Returns
+        -------
+        df : pyspark dataframe
+            OLTP table is returned as a pyspark dataframe
+        """
+        # get oltp table
+        df = spark.read.format("jdbc").option("url", "jdbc:Oracle:thin:Dataprd/eimjob@//172.31.14.101:1521/MPCD") \
+            .option("dbtable", query).option("user","dataprd").option("password", "eimjob") \
+            .option("driver", "oracle.jdbc.driver.OracleDriver").load()
+        return df
+
+    def get_olapdev(self, spark, query):
+        """Get the OLAP table based on the query passed
+        Parameters
+        ----------
+        query : string
+            SQL query as a string.
+        spark : object
+            Spark session object
+        Returns
+        -------
+        df : pyspark dataframe
+            Pyspark dataframe
+        """
+        # get olap table
+        df = spark.read.format("jdbc").option("url", "jdbc:oracle:thin:PROD_OLAP/PROD_OLAP@//172.31.195.38/OLAPPRODHA") \
+                .option("dbtable", query).option("user","PROD_OLAP").option("password", "PROD_OLAP") \
+                .option("driver", "oracle.jdbc.driver.OracleDriver").load()
+        return df
+
+
+    def parameterized_query(self, pattern, value, query_path):
+        query = self.get_query(query_path)
+        updated_query = re.sub(pattern, value, query)
+        return updated_query
+
+    def parameterized_lookup(self, staging_table_name, lookup_table_name, query_path):
+        """Get the TeraData table based on the query passed
+        Parameters
+        ----------
+        staging_table_name : string
+            Name of staging table.
+        lookup_table_name : string
+            Name of lookup table.
+        query_path : string
+            Path to the original query file.
+        Returns
+        -------
+        query : string
+            updated SQL query as a string
+        """
+        query = self.get_query(query_path)
+
+        patterns = ['\$\$TARGET_TABLE', '\$\$STAGE_TABLE']
+
+        for pattern in patterns:
+            if pattern == '\$\$TARGET_TABLE':
+                # this will substitute the pattern with the respective target table in query
+                query = re.sub(pattern, lookup_table_name, query)
+            elif pattern == '\$\$STAGE_TABLE':
+                # this will substitute the pattern with the respective staging table in query
+                query = re.sub(pattern, staging_table_name, query)
+            else:
+                return query
+        return query
+
+    def insertUpdate_merge(self, source_dataframe, target_dataframe, condition, orderby):
+        """Generate new ROW_WID for rows that are to be inserted into the target
+        Parameters
+        ----------
+        source_dataframe : dataframe
+            Pyspark dataframe generated in mapping.
+        target_dataframe : dataframe
+            Pyspark dataframe of target table.
+        condition : list
+            List of conditions for join.
+        orderby : string
+            Column Name to orderby as a string.
+        Returns
+        -------
+        df_result : dataframe
+            Pyspark dataframe with row_wid.
+        """
+        # get rows that are for insert
+        df_insert = source_dataframe.join(target_dataframe,condition,"leftanti")
+        print (condition)
+        # get rows that are for update
+        df_update = source_dataframe.join(target_dataframe,condition,"leftsemi")
+        # get the rest of the data that are not changed in target
+        df_rest = target_dataframe.join(source_dataframe,condition,"leftanti")
+
+        # get max row_wid from target
+        max_row_wid = target_dataframe.agg({"ROW_WID": "max"}).collect()[0]["max(ROW_WID)"]
+
+        # increment row_wid on new insert rows (ie 1 more than the max_row_wid)
+        windowSpec = Window.orderBy(df_insert[orderby].desc())
+        row_wid_generated = row_number().over(windowSpec) + max_row_wid
+
+        # drop the ROW_WID column if exists and add new ROW_WID column that was generated
+        df_insert_final = df_insert.drop("ROW_WID").select(row_wid_generated.alias("ROW_WID"),"*")
+
+        # arrange columns of insert dataframe with target, before union
+        df_insert_final = df_insert_final.selectExpr(target_dataframe.columns)
+
+        # perform a union of insert, update and rest dataframe
+        df_result = df_insert_final.union(df_update).union(df_rest)
+
+        return df_result
+
+    def update_merge(self, source_dataframe, target_dataframe, columns, condition):
+        """The function merges the rows that are for intermittent update, with the target dataframe
+        Parameters
+        ----------
+        source_dataframe : dataframe
+            Pyspark dataframe generated in mapping.
+        target_dataframe : dataframe
+            Pyspark dataframe of target table.
+        columns : list
+            List of column names that are to be updated.
+        condition : list
+            List of conditions for join.
+        Returns
+        -------
+        df_result : dataframe
+            Pyspark dataframe updated with the target.
+        """
+        columns_from_target = ['target_dataframe.'+col for col in target_dataframe.columns if col not in columns]
+        columns_from_source = ['source_dataframe.'+col for col in source_dataframe.columns]
+        all_columns = columns_from_target + columns_from_source
+        columns_to_keep = [eval(col) for col in all_columns]
+
+        # get rows that are for update
+        df_update = source_dataframe.join(target_dataframe, condition, "inner").select(columns_to_keep)
+        # arrange the columns wrt the target columns
+        df_update = df_update.selectExpr(target_dataframe.columns)
+        # get the rest of the data that are not changed in target
+        df_rest = target_dataframe.join(source_dataframe, condition, "leftanti")
+        # merge both the dataframes
+        df_result = df_update.union(df_rest)
+
+        return df_result
+
+    def get_olap(self, spark, query):
+        df = spark.read.format("jdbc").option("url", "jdbc:oracle:thin:DEV_OLAP/DEV_OLAP@//172.31.196.32/OLAPDEVR") \
+                .option("dbtable", query).option("user","DEV_OLAP").option("password", "DEV_OLAP") \
+                .option("driver", "oracle.jdbc.driver.OracleDriver").load()
+        return df
