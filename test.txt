@@ -1,0 +1,110 @@
+object_name="mseg"
+src_path="s3"
+src_delimiter_of_txt="txt"
+src_user_name_or_access_key_id="xzz"
+src_password_or_secret_access_key="12jnj"
+
+def s3_data_read(object_name,src_path,src_format,src_delimiter_of_txt,src_user_name_or_access_key_id,src_password_or_secret_access_key):
+    client = boto3.client('s3')
+    response = client.get_bucket_location(
+        Bucket=src_path.split('/')[2]
+    )
+    sc._jsc.hadoopConfiguration().set("fs.s3a.endpoint", "s3-"+response['LocationConstraint']+".amazonaws.com")
+    sc._jsc.hadoopConfiguration().set("fs.s3a.access.key", src_user_name_or_access_key_id)
+    sc._jsc.hadoopConfiguration().set("fs.s3a.secret.key", src_password_or_secret_access_key)
+    if src_format=='excel':
+        df=spark.read.format("com.crealytics.spark.excel").option("header","true").option("useHeader", "true").option("treatEmptyValuesAsNulls", "true").option("inferSchema", "true").option("addColorColumns", "False").load(src_path)
+    elif src_format=='text':
+        rdd=sc.textFile(src_path).map(lambda x: x.split(src_delimiter_of_txt))
+        header=rdd.first()
+        rdd_body=rdd.filter(lambda line: line != header)
+        df=spark.createDataFrame(rdd_body,schema=header)
+    else:
+        df=spark.read.format(src_format).option("header","true").option("useHeader", "true").option("treatEmptyValuesAsNulls", "true").option("inferSchema", "true").option("addColorColumns", "False").load(src_path)
+    return df
+
+df=s3_data_read(object_name,src_path,src_format,src_delimiter_of_txt,src_user_name_or_access_key_id,src_password_or_secret_access_key)
+
+if dependent_table_nm:
+            '''
+            added by ac1.ttl on 08-oct-2020 for dependent table data extraction
+            '''
+            dependent_table_nm_lst=dependent_table_nm.split('|')
+            dependent_col_name_lst=dependent_col_name.split('|')
+            max_dict={}
+            for ind in range(len(dependent_table_nm_lst)):
+                max_dict.update({dependent_col_name_lst[ind]:'max'})
+            max_val_all_col=df.agg(max_dict).collect()[0]
+            for ind in range(len(dependent_table_nm_lst)):
+                if stg_suffix=='staging':
+                    d_mysql_filter="dagid_id="+str(dag_id)+" and objectname='"+dependent_table_nm_lst[ind]+"' and activeflag ='y')"
+                else:
+                    d_mysql_filter="dagid_id="+str(dag_id)+" and objectname='"+dependent_table_nm_lst[ind]+"' and stgsuffix='"+stg_suffix+"' and activeflag ='y')"
+                d_mysql_query="select objectname object_name,cdccolumns cdc_columns,cdccolsvalue cdc_value from dataext_tabledetails tbl where "+d_mysql_filter
+                d_result=mysql_connector(d_mysql_query,"SELECT")
+                (d_object_name,d_cdc_columns,d_cdc_value)=d_result[0]
+                d_cdc_columns_lst=cdc_columns.split('|')
+                d_index_col=d_cdc_columns_lst.index(dependent_col_name_lst[ind])
+                d_cdc_columns_lst[d_index_col]=max_val_all_col["max("+dependent_col_name_lst[ind]+")"]
+                d_cdc_columns_str='|'.join(d_cdc_columns_lst)
+                update_mysql="update dataext_tabledetails set cdccolumns='"+d_cdc_columns_str+"' where "+d_mysql_filter
+                mysql_connector(update_mysql,"UPDATE")
+            
+#######
+
+#!/bin/python
+
+import math
+import os
+import random
+import re
+import sys
+
+#
+# Complete the 'diagonalDifference' function below.
+#
+# The function is expected to return an INTEGER.
+# The function accepts 2D_INTEGER_ARRAY arr as parameter.
+#
+
+def diagonalDifference(arr):
+    # Write your code here
+    #print(arr)
+    for i in range(len(arr)):
+        #print(len(arr))
+        #print(arr[i][i])
+        #print(arr[i][len(arr) - i - 1])
+        #for j in range(len(arr)):
+        p = arr[i][i] 
+        q=p
+        print(p,q)
+        q=q+p
+    #print(q)
+        #secondary += arr[i][len(arr) - i - 1] 
+        #result=abs(principal-secondary)
+    #return(result)
+
+
+if __name__ == '__main__':
+    fptr = open(os.environ['OUTPUT_PATH'], 'w')
+
+    n = int(raw_input("enter matrix length").strip())
+
+    arr = []
+
+    for i in xrange(n):
+        print("inside*************")
+        print(i)
+        print("##############")
+        #print(arr[1])
+        arr.append(map(int,raw_input(i).rstrip().split()))
+        #raw_input("enter matrix elements").rstrip().split()
+
+    result = diagonalDifference(arr)
+
+    #fptr.write(str(result) + '\n')
+
+    #fptr.close()
+
+ 
+ 
